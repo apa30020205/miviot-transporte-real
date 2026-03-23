@@ -2,6 +2,7 @@ import { useState, useRef } from 'react'
 import FullCalendar from '@fullcalendar/react'
 import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
+import esLocale from '@fullcalendar/core/locales/es'
 
 const initialEvents = [
   {
@@ -24,6 +25,48 @@ const initialEvents = [
     end: '2026-03-24T10:00:00',
     status: 'Urgente',
     vehicle: 'Prado 5'
+  },
+  {
+    title: 'Fortuner 4 - Operaciones',
+    start: '2026-03-25T07:30:00',
+    end: '2026-03-25T09:00:00',
+    status: 'Aprobado',
+    vehicle: 'Fortuner 4'
+  },
+  {
+    title: 'Hilux 3 - Sistemas',
+    start: '2026-03-25T13:00:00',
+    end: '2026-03-25T15:30:00',
+    status: 'Pendiente',
+    vehicle: 'Hilux 3'
+  },
+  {
+    title: 'Prado 9 - Logística',
+    start: '2026-03-26T10:30:00',
+    end: '2026-03-26T12:00:00',
+    status: 'Aprobado',
+    vehicle: 'Prado 9'
+  },
+  {
+    title: 'Hilux 11 - Gerencia',
+    start: '2026-03-27T08:00:00',
+    end: '2026-03-27T09:30:00',
+    status: 'Urgente',
+    vehicle: 'Hilux 11'
+  },
+  {
+    title: 'Fortuner 2 - Mantenimiento',
+    start: '2026-03-27T11:00:00',
+    end: '2026-03-27T13:00:00',
+    status: 'Pendiente',
+    vehicle: 'Fortuner 2'
+  },
+  {
+    title: 'Prado 14 - Compras',
+    start: '2026-03-27T15:00:00',
+    end: '2026-03-27T17:00:00',
+    status: 'Aprobado',
+    vehicle: 'Prado 14'
   }
 ]
 
@@ -31,7 +74,7 @@ export default function App() {
   const calendarRef = useRef(null)
 
   const [events] = useState(initialEvents)
-  const [currentDate, setCurrentDate] = useState(new Date())
+  const [currentRangeLabel, setCurrentRangeLabel] = useState('')
   const [selectedEvent, setSelectedEvent] = useState(null)
 
   const getColor = (status) => {
@@ -69,13 +112,7 @@ export default function App() {
 
         {/* CONTROLES */}
         <div style={controls}>
-          <h3 style={dateTitle}>
-            {currentDate.toLocaleDateString('es-ES', {
-              month: 'long',
-              day: 'numeric',
-              year: 'numeric'
-            })}
-          </h3>
+          <h3 style={dateTitle}>{currentRangeLabel}</h3>
         </div>
 
         {/* CALENDARIO */}
@@ -83,6 +120,8 @@ export default function App() {
           <FullCalendar
             ref={calendarRef}
             plugins={[timeGridPlugin, interactionPlugin]}
+            locale={esLocale}
+            firstDay={1}
             initialView="timeGridWeek"
             editable
             selectable
@@ -93,7 +132,7 @@ export default function App() {
               borderColor: getColor(e.status)
             }))}
 
-            datesSet={(arg) => setCurrentDate(arg.start)}
+            datesSet={(arg) => setCurrentRangeLabel(formatWeekRange(arg.start, arg.end))}
 
             eventClick={(info) => setSelectedEvent(info.event)}
           />
@@ -270,6 +309,32 @@ const dateTitle = {
   fontSize: 15,
   letterSpacing: '0.02em',
   color: '#334155'
+}
+
+function formatWeekRange(startDate, endDateExclusive) {
+  const endDate = new Date(endDateExclusive)
+  endDate.setDate(endDate.getDate() - 1)
+
+  const sameMonth = startDate.getMonth() === endDate.getMonth()
+  const sameYear = startDate.getFullYear() === endDate.getFullYear()
+
+  if (sameMonth && sameYear) {
+    const monthYear = startDate.toLocaleDateString('es-ES', {
+      month: 'long',
+      year: 'numeric'
+    })
+    return `${startDate.getDate()}-${endDate.getDate()} de ${monthYear}`
+  }
+
+  return `${startDate.toLocaleDateString('es-ES', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric'
+  })} - ${endDate.toLocaleDateString('es-ES', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric'
+  })}`
 }
 
 const calendarBox = {
