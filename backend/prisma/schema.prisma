@@ -25,15 +25,16 @@ model Chofer {
 }
 
 model Servicio {
-  id         Int      @id @default(autoincrement())
-  fecha      DateTime
-  origen     String
-  destino    String
-  estado     String
-  vehiculoId Int
-  choferId   Int
-  vehiculo   Vehiculo @relation(fields: [vehiculoId], references: [id])
-  chofer     Chofer   @relation(fields: [choferId], references: [id])
+  id               Int      @id @default(autoincrement())
+  fecha            DateTime
+  duracionMinutos  Int      @default(120)
+  origen           String
+  destino          String
+  estado           String
+  vehiculoId       Int
+  choferId         Int
+  vehiculo         Vehiculo @relation(fields: [vehiculoId], references: [id])
+  chofer           Chofer   @relation(fields: [choferId], references: [id])
 }
 
 model Taller {

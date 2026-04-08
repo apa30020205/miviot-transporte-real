@@ -1,7 +1,7 @@
 {
   "name": "demo-frontend",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "concurrently -n server,client -c green,blue \"npm run dev:server\" \"npm run dev:client\"",
@@ -9,13 +9,19 @@
     "dev:server": "npm run dev --prefix backend",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "release:github": "powershell -ExecutionPolicy Bypass -File ./scripts/release-github.ps1"
   },
   "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
     "@fullcalendar/daygrid": "^6.1.20",
     "@fullcalendar/interaction": "^6.1.20",
     "@fullcalendar/react": "^6.1.20",
     "@fullcalendar/timegrid": "^6.1.20",
+    "@mui/material": "^9.0.0",
+    "@mui/x-date-pickers": "^9.0.0",
+    "dayjs": "^1.11.20",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },

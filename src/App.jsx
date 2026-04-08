@@ -22,6 +22,28 @@ import {
   updateTaller,
   deleteTaller
 } from './api/taller'
+import ServicioMaterialTimePicker from './components/ServicioMaterialTimePicker'
+
+/** Evita filas duplicadas si la API devolviera el mismo id más de una vez */
+function dedupeById(rows) {
+  const m = new Map()
+  for (const x of rows || []) {
+    const id = x?.id
+    if (id != null && !m.has(id)) m.set(id, x)
+  }
+  return [...m.values()]
+}
+
+/** ID de servicio para API: FullCalendar usa `id` público; `extendedProps` es respaldo */
+function servicioIdFromCalendarEvent(ev) {
+  if (!ev) return null
+  const parse = (v) => {
+    if (v == null || v === '') return null
+    const n = Number(String(v).replace(/_\d+$/, ''))
+    return Number.isInteger(n) && n > 0 ? n : null
+  }
+  return parse(ev.id) ?? parse(ev.extendedProps?.servicioId)
+}
 
 /** datetime-local a veces queda solo con fecha (sin hora) → Date inválido */
 function localDateTimeInputToIso(value) {
@@ -32,6 +54,58 @@ function localDateTimeInputToIso(value) {
   const d = new Date(withTime)
   if (Number.isNaN(d.getTime())) return new Date().toISOString()
   return d.toISOString()
+}
+
+/** Campos type="date" y type="time" separados → ISO; sin hora usa 12:00 local */
+function servicioFechaHoraToIso(fechaDia, fechaHora) {
+  const d = (fechaDia || '').trim()
+  if (!d) return null
+  const h = (fechaHora || '').trim()
+  const timePart = h.length >= 5 ? h.slice(0, 5) : '12:00'
+  const combined = `${d}T${timePart}`
+  const dt = new Date(combined)
+  if (Number.isNaN(dt.getTime())) return null
+  return dt.toISOString()
+}
+
+/** Valores para inputs date/time locales al editar un ISO guardado */
+function isoToDateInputValue(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function isoToTimeInputValue(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const h = String(d.getHours()).padStart(2, '0')
+  const min = String(d.getMinutes()).padStart(2, '0')
+  return `${h}:${min}`
+}
+
+/** Total minutos desde campos horas + minutos del formulario (15 min – 24 h) */
+function servicioDuracionMinutosDesdeForm(horasStr, minutosStr) {
+  const h = Math.max(0, Math.min(24, Number(horasStr) || 0))
+  const m = Math.max(0, Math.min(59, Number(minutosStr) || 0))
+  const total = h * 60 + m
+  if (total < 15 || total > 24 * 60) return null
+  return total
+}
+
+function etiquetaDuracion(minutos) {
+  const n = Number(minutos)
+  if (!Number.isFinite(n) || n <= 0) return '—'
+  const h = Math.floor(n / 60)
+  const r = Math.round(n % 60)
+  const parts = []
+  if (h > 0) parts.push(`${h} h`)
+  if (r > 0) parts.push(`${r} min`)
+  return parts.length ? parts.join(' ') : '0 min'
 }
 
 const navItems = [
@@ -47,6 +121,7 @@ export default function App() {
 
   const [currentRangeLabel, setCurrentRangeLabel] = useState('')
   const [selectedEvent, setSelectedEvent] = useState(null)
+  const [servicioDeleting, setServicioDeleting] = useState(false)
   const [activeNav, setActiveNav] = useState('transporte')
   const [hoveredNav, setHoveredNav] = useState(null)
 
@@ -214,27 +289,44 @@ export default function App() {
               <h2>{selectedEvent.title}</h2>
               <p>Inicio: {selectedEvent.start.toLocaleString()}</p>
               <p>Fin: {selectedEvent.end?.toLocaleString?.() ?? '—'}</p>
-              {selectedEvent.extendedProps?.servicioId != null && (
+              <p>
+                Duración:{' '}
+                {etiquetaDuracion(selectedEvent.extendedProps?.duracionMinutos)}
+              </p>
+              {servicioIdFromCalendarEvent(selectedEvent) != null && (
                 <button
                   type="button"
                   style={{
                     ...btnPrimary,
                     marginRight: 8,
-                    background: '#b91c1c'
+                    background: '#b91c1c',
+                    opacity: servicioDeleting ? 0.65 : 1,
+                    cursor: servicioDeleting ? 'wait' : 'pointer'
                   }}
+                  disabled={servicioDeleting}
                   onClick={async () => {
-                    const id = Number(selectedEvent.extendedProps.servicioId)
+                    const id = servicioIdFromCalendarEvent(selectedEvent)
                     if (!id || !confirm('¿Eliminar este servicio?')) return
+                    setServicioDeleting(true)
+                    let cerrar = false
                     try {
                       await deleteServicio(id)
+                      cerrar = true
+                    } catch (e) {
+                      const msg =
+                        e instanceof Error ? e.message : 'Error al eliminar'
+                      if (msg === 'No encontrado') cerrar = true
+                      else alert(msg)
+                    } finally {
+                      setServicioDeleting(false)
+                    }
+                    if (cerrar) {
                       setSelectedEvent(null)
                       window.dispatchEvent(new Event('miviot-refresh-transporte'))
-                    } catch (e) {
-                      alert(e instanceof Error ? e.message : 'Error al eliminar')
                     }
                   }}
                 >
-                  Eliminar servicio
+                  {servicioDeleting ? 'Eliminando…' : 'Eliminar servicio'}
                 </button>
               )}
               <button style={btnPrimary} onClick={() => setSelectedEvent(null)}>
@@ -282,6 +374,40 @@ export default function App() {
         .nav-indicator {
           will-change: transform;
         }
+
+        .transporte-calendar-host .fc {
+          flex: 1;
+          min-height: 0;
+          font-size: 0.95rem;
+        }
+
+        .transporte-calendar-host .fc .fc-col-header-cell-cushion {
+          font-size: clamp(0.9rem, 1.25vw, 1.05rem);
+          font-weight: 800;
+          padding: 10px 6px;
+          line-height: 1.25;
+        }
+
+        .transporte-calendar-host .fc .fc-timegrid-axis-cushion,
+        .transporte-calendar-host .fc .fc-timegrid-slot-label-cushion {
+          font-size: clamp(0.82rem, 1.1vw, 0.98rem);
+          font-weight: 650;
+        }
+
+        .transporte-calendar-host .fc .fc-timegrid-slot {
+          height: 52px !important;
+        }
+
+        .transporte-calendar-host .fc .fc-timegrid-slot-label {
+          vertical-align: middle;
+        }
+
+        .transporte-calendar-host .fc .fc-event-title,
+        .transporte-calendar-host .fc .fc-event-time {
+          font-size: 0.78rem;
+          font-weight: 650;
+          line-height: 1.25;
+        }
       `}</style>
 
     </div>
@@ -289,11 +415,14 @@ export default function App() {
 }
 
 /* COMPONENTE KPI */
-function Card({ title, value }) {
+function Card({ title, value, hint, compact }) {
   return (
-    <div className="kpi-card" style={card}>
-      <p style={cardNumber}>{value}</p>
-      <p style={cardText}>{title}</p>
+    <div className="kpi-card" style={compact ? cardCompact : card}>
+      <p style={compact ? cardNumberCompact : cardNumber}>{value}</p>
+      {hint ? (
+        <p style={compact ? cardHintCompact : cardHint}>{hint}</p>
+      ) : null}
+      <p style={compact ? cardTextCompact : cardText}>{title}</p>
     </div>
   )
 }
@@ -638,8 +767,10 @@ function TallerMantenimientoPanel({ active }) {
   const [err, setErr] = useState('')
   const [form, setForm] = useState({
     tipo: 'Mantenimiento',
-    fechaIngreso: '',
-    fechaSalida: '',
+    ingresoDia: '',
+    ingresoHora: '',
+    salidaDia: '',
+    salidaHora: '',
     estado: 'Ingresado',
     costo: '',
     descripcion: ''
@@ -709,11 +840,22 @@ function TallerMantenimientoPanel({ active }) {
     const estado = form.estado.trim() || 'Ingresado'
     const descripcion = form.descripcion.trim() || 'Sin descripción'
     try {
-      const fechaIn = localDateTimeInputToIso(form.fechaIngreso)
-      const fechaOutRaw = form.fechaSalida.trim()
-      const fechaOut = fechaOutRaw
-        ? localDateTimeInputToIso(form.fechaSalida)
-        : null
+      const fechaIn = servicioFechaHoraToIso(form.ingresoDia, form.ingresoHora)
+      if (!fechaIn) {
+        setErr(
+          'Indica la fecha de ingreso (la hora es opcional; si falta, se usa 12:00).'
+        )
+        return
+      }
+      const tieneSalida = (form.salidaDia || '').trim() !== ''
+      let fechaOut = null
+      if (tieneSalida) {
+        fechaOut = servicioFechaHoraToIso(form.salidaDia, form.salidaHora)
+        if (!fechaOut) {
+          setErr('La fecha de salida no es válida.')
+          return
+        }
+      }
       const payload = {
         vehiculoId: vid,
         tipo,
@@ -730,8 +872,10 @@ function TallerMantenimientoPanel({ active }) {
       }
       setForm({
         tipo: 'Mantenimiento',
-        fechaIngreso: '',
-        fechaSalida: '',
+        ingresoDia: '',
+        ingresoHora: '',
+        salidaDia: '',
+        salidaHora: '',
         estado: 'Ingresado',
         costo: '',
         descripcion: ''
@@ -791,7 +935,7 @@ function TallerMantenimientoPanel({ active }) {
             {editingId ? `Editar orden #${editingId}` : 'Nueva orden'}
           </div>
           <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>
-            Obligatorios: tipo, estado, ingreso (fecha y hora), costo y descripción. Si solo eliges fecha, se usa mediodía.
+            Obligatorios: tipo, estado, ingreso (fecha y hora por separado), costo y descripción. Salida es opcional; si solo pones fecha de salida, la hora por defecto es 12:00.
           </p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
             <input
@@ -806,27 +950,57 @@ function TallerMantenimientoPanel({ active }) {
               onChange={(e) => setForm((f) => ({ ...f, estado: e.target.value }))}
               style={reportSearchInput}
             />
-            <input
-              type="datetime-local"
-              value={form.fechaIngreso}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, fechaIngreso: e.target.value }))
-              }
-              style={reportSearchInput}
-            />
-            <input
-              type="datetime-local"
-              value={form.fechaSalida}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, fechaSalida: e.target.value }))
-              }
-              style={reportSearchInput}
-            />
+            <label style={transporteFieldWrap}>
+              <span style={transporteFieldLabel}>Ingreso · fecha</span>
+              <input
+                type="date"
+                value={form.ingresoDia}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, ingresoDia: e.target.value }))
+                }
+                style={reportSearchInput}
+              />
+            </label>
+            <label style={transporteFieldWrap}>
+              <span style={transporteFieldLabel}>Ingreso · hora</span>
+              <input
+                type="time"
+                step={60}
+                value={form.ingresoHora}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, ingresoHora: e.target.value }))
+                }
+                style={reportSearchInput}
+              />
+            </label>
+            <label style={transporteFieldWrap}>
+              <span style={transporteFieldLabel}>Salida · fecha (opc.)</span>
+              <input
+                type="date"
+                value={form.salidaDia}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, salidaDia: e.target.value }))
+                }
+                style={reportSearchInput}
+              />
+            </label>
+            <label style={transporteFieldWrap}>
+              <span style={transporteFieldLabel}>Salida · hora (opc.)</span>
+              <input
+                type="time"
+                step={60}
+                value={form.salidaHora}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, salidaHora: e.target.value }))
+                }
+                style={reportSearchInput}
+              />
+            </label>
             <input
               placeholder="Costo *"
               value={form.costo}
               onChange={(e) => setForm((f) => ({ ...f, costo: e.target.value }))}
-              style={reportSearchInput}
+              style={{ ...reportSearchInput, gridColumn: '1 / -1' }}
             />
           </div>
           <textarea
@@ -849,8 +1023,10 @@ function TallerMantenimientoPanel({ active }) {
                 setEditingId(null)
                 setForm({
                   tipo: 'Mantenimiento',
-                  fechaIngreso: '',
-                  fechaSalida: '',
+                  ingresoDia: '',
+                  ingresoHora: '',
+                  salidaDia: '',
+                  salidaHora: '',
                   estado: 'Ingresado',
                   costo: '',
                   descripcion: ''
@@ -891,11 +1067,13 @@ function TallerMantenimientoPanel({ active }) {
                           setEditingId(t.id)
                           setForm({
                             tipo: t.tipo,
-                            fechaIngreso: t.fechaIngreso
-                              ? new Date(t.fechaIngreso).toISOString().slice(0, 16)
+                            ingresoDia: isoToDateInputValue(t.fechaIngreso),
+                            ingresoHora: isoToTimeInputValue(t.fechaIngreso),
+                            salidaDia: t.fechaSalida
+                              ? isoToDateInputValue(t.fechaSalida)
                               : '',
-                            fechaSalida: t.fechaSalida
-                              ? new Date(t.fechaSalida).toISOString().slice(0, 16)
+                            salidaHora: t.fechaSalida
+                              ? isoToTimeInputValue(t.fechaSalida)
                               : '',
                             estado: t.estado,
                             costo: String(t.costo),
@@ -1188,8 +1366,12 @@ function TransporteDashboard({
   const [choferes, setChoferes] = useState([])
   const [vehiculosLoading, setVehiculosLoading] = useState(false)
   const [transporteError, setTransporteError] = useState('')
+  const [servicioSaving, setServicioSaving] = useState(false)
   const [servForm, setServForm] = useState({
-    fecha: '',
+    fechaDia: '',
+    fechaHora: '',
+    durHoras: '2',
+    durMinutos: '0',
     origen: '',
     destino: '',
     estado: 'Pendiente',
@@ -1198,9 +1380,18 @@ function TransporteDashboard({
   })
 
   const calendarEvents = useMemo(() => {
-    return (servicios || []).map((s) => {
+    const byId = new Map()
+    for (const s of servicios || []) {
+      const id = s?.id
+      if (id == null || byId.has(id)) continue
+      byId.set(id, s)
+    }
+    return [...byId.values()].map((s) => {
       const start = new Date(s.fecha)
-      const end = new Date(start.getTime() + 2 * 60 * 60 * 1000)
+      const dm = s.duracionMinutos
+      const mins =
+        dm != null && Number(dm) >= 15 ? Number(dm) : 120
+      const end = new Date(start.getTime() + mins * 60 * 1000)
       const placa = s.vehiculo?.placa ?? `#${s.vehiculoId}`
       return {
         id: String(s.id),
@@ -1208,7 +1399,7 @@ function TransporteDashboard({
         start: start.toISOString(),
         end: end.toISOString(),
         status: s.estado,
-        extendedProps: { servicioId: s.id }
+        extendedProps: { servicioId: s.id, duracionMinutos: mins }
       }
     })
   }, [servicios])
@@ -1222,10 +1413,9 @@ function TransporteDashboard({
         fetchServicios(),
         fetchChoferes()
       ])
-      console.log('dashboard datos:', { vehiculos: v, servicios: s, choferes: c })
-      setVehiculos(Array.isArray(v) ? v : [])
+      setVehiculos(dedupeById(Array.isArray(v) ? v : []))
       setServicios(Array.isArray(s) ? s : [])
-      setChoferes(Array.isArray(c) ? c : [])
+      setChoferes(dedupeById(Array.isArray(c) ? c : []))
     } catch (err) {
       setTransporteError(
         err instanceof Error ? err.message : 'Error al cargar datos'
@@ -1282,7 +1472,13 @@ function TransporteDashboard({
     String(v.estado).toLowerCase().includes('activ')
   ).length
 
+  const vehiculoSeleccionado = useMemo(
+    () => vehiculos.find((v) => String(v.id) === String(servForm.vehiculoId)),
+    [vehiculos, servForm.vehiculoId]
+  )
+
   async function saveServicio() {
+    if (servicioSaving) return
     setTransporteError('')
     const origen = servForm.origen.trim()
     const destino = servForm.destino.trim()
@@ -1295,10 +1491,26 @@ function TransporteDashboard({
       )
       return
     }
+    const duracionMinutos = servicioDuracionMinutosDesdeForm(
+      servForm.durHoras,
+      servForm.durMinutos
+    )
+    if (duracionMinutos == null) {
+      setTransporteError(
+        'Duración: entre 15 minutos y 24 horas (ajusta horas y minutos).'
+      )
+      return
+    }
+    const fechaIso = servicioFechaHoraToIso(servForm.fechaDia, servForm.fechaHora)
+    if (!fechaIso) {
+      setTransporteError('Indica la fecha del servicio (la hora es opcional; si falta, se usa 12:00).')
+      return
+    }
+    setServicioSaving(true)
     try {
-      const fechaIso = localDateTimeInputToIso(servForm.fecha)
       await createServicio({
         fecha: fechaIso,
+        duracionMinutos,
         origen,
         destino,
         estado,
@@ -1306,7 +1518,10 @@ function TransporteDashboard({
         choferId: cid
       })
       setServForm((f) => ({
-        fecha: '',
+        fechaDia: '',
+        fechaHora: '',
+        durHoras: '2',
+        durMinutos: '0',
         origen: '',
         destino: '',
         estado: 'Pendiente',
@@ -1316,69 +1531,225 @@ function TransporteDashboard({
       await loadAll()
     } catch (e) {
       setTransporteError(e instanceof Error ? e.message : 'Error al crear servicio')
+    } finally {
+      setServicioSaving(false)
     }
   }
 
   return (
-    <>
-      <header style={headerBlock}>
-        <h1 style={title}>Centro de Control de Transporte</h1>
-        <p style={subtitle}>
-          Cronograma y servicios. Los vehículos se gestionan en TALLER/VEHÍCULOS.
+    <div style={transporteRoot}>
+      <header style={transporteHeader}>
+        <h1 style={transporteTitle}>Centro de Control de Transporte</h1>
+        <p style={transporteSubtitle}>
+          Cronograma y servicios · Vehículos en{' '}
+          <strong style={{ fontWeight: 700 }}>TALLER/VEHÍCULOS</strong>
         </p>
       </header>
 
-      <div style={cards}>
-        <Card title="Vehículos (activos)" value={String(disponibles || vehiculos.length)} />
-        <Card title="En servicio (aprox.)" value={String(enServicio || 0)} />
-        <Card title="Servicios hoy" value={String(serviciosHoy)} />
-        <Card title="Choferes" value={String(choferes.length)} />
+      <div style={transporteCards}>
+        <Card
+          compact
+          title="Vehículos registrados"
+          value={String(vehiculos.length)}
+          hint={
+            disponibles > 0
+              ? `${disponibles} con estado “activo”`
+              : 'Ninguno coincide con estado activo'
+          }
+        />
+        <Card compact title="En servicio (aprox.)" value={String(enServicio || 0)} />
+        <Card compact title="Servicios hoy" value={String(serviciosHoy)} />
+        <Card compact title="Choferes registrados" value={String(choferes.length)} />
       </div>
 
       {transporteError && (
-        <p style={{ color: '#b91c1c', fontWeight: 700, marginBottom: 12 }}>{transporteError}</p>
+        <p style={{ color: '#b91c1c', fontWeight: 700, marginBottom: 8, fontSize: 13 }}>
+          {transporteError}
+        </p>
       )}
       {vehiculosLoading && (
-        <p style={{ color: '#64748b', marginBottom: 12 }}>Cargando datos del cronograma…</p>
+        <p style={{ color: '#64748b', marginBottom: 8, fontSize: 13 }}>Cargando cronograma…</p>
       )}
 
-      <div style={reportPanel}>
-        <div style={{ fontWeight: 900, marginBottom: 10 }}>Nuevo servicio (calendario)</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
-          <input type="datetime-local" value={servForm.fecha} onChange={(e) => setServForm((f) => ({ ...f, fecha: e.target.value }))} style={reportSearchInput} />
-          <input placeholder="Origen" value={servForm.origen} onChange={(e) => setServForm((f) => ({ ...f, origen: e.target.value }))} style={reportSearchInput} />
-          <input placeholder="Destino" value={servForm.destino} onChange={(e) => setServForm((f) => ({ ...f, destino: e.target.value }))} style={reportSearchInput} />
-          <input placeholder="Estado servicio" value={servForm.estado} onChange={(e) => setServForm((f) => ({ ...f, estado: e.target.value }))} style={reportSearchInput} />
-          <select value={servForm.vehiculoId} onChange={(e) => setServForm((f) => ({ ...f, vehiculoId: e.target.value }))} style={reportSelect}>
-            <option value="">Vehículo</option>
-            {vehiculos.map((v) => (
-              <option key={v.id} value={String(v.id)}>{v.placa}</option>
-            ))}
-          </select>
-          <select value={servForm.choferId} onChange={(e) => setServForm((f) => ({ ...f, choferId: e.target.value }))} style={reportSelect}>
-            <option value="">Chofer</option>
-            {choferes.map((ch) => (
-              <option key={ch.id} value={String(ch.id)}>{ch.nombre}</option>
-            ))}
-          </select>
+      <div style={transporteFormPanel}>
+        <div style={transporteFormTitle}>Nuevo servicio</div>
+        <div style={transporteFormRow1}>
+          <label style={transporteFieldWrap}>
+            <span style={transporteFieldLabel}>Fecha</span>
+            <input
+              type="date"
+              value={servForm.fechaDia}
+              onChange={(e) =>
+                setServForm((f) => ({ ...f, fechaDia: e.target.value }))
+              }
+              style={{ ...transporteInput, ...transporteInputDateTime }}
+            />
+          </label>
+          <ServicioMaterialTimePicker
+            value={servForm.fechaHora}
+            onChange={(v) => setServForm((f) => ({ ...f, fechaHora: v }))}
+            disabled={servicioSaving || vehiculosLoading}
+            labelStyle={transporteFieldLabel}
+            wrapStyle={transporteFieldWrap}
+            triggerStyle={{
+              ...transporteInput,
+              ...transporteInputDateTime,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 8,
+              width: '100%',
+              cursor:
+                servicioSaving || vehiculosLoading ? 'not-allowed' : 'pointer',
+              fontFamily: 'inherit',
+              textAlign: 'left'
+            }}
+          />
+          <label style={transporteFieldWrap}>
+            <span style={transporteFieldLabel}>Origen</span>
+            <input
+              placeholder="Origen"
+              value={servForm.origen}
+              onChange={(e) =>
+                setServForm((f) => ({ ...f, origen: e.target.value }))
+              }
+              style={transporteInput}
+            />
+          </label>
+          <label style={transporteFieldWrap}>
+            <span style={transporteFieldLabel}>Destino</span>
+            <input
+              placeholder="Destino"
+              value={servForm.destino}
+              onChange={(e) =>
+                setServForm((f) => ({ ...f, destino: e.target.value }))
+              }
+              style={transporteInput}
+            />
+          </label>
         </div>
-        <button type="button" style={{ ...reportBtnPrimary, marginTop: 8 }} onClick={saveServicio}>Agregar al calendario</button>
+        <div style={transporteFormRow2}>
+          <label style={transporteFieldWrap}>
+            <span style={transporteFieldLabel}>Chofer</span>
+            <select
+              value={servForm.choferId}
+              onChange={(e) =>
+                setServForm((f) => ({ ...f, choferId: e.target.value }))
+              }
+              style={transporteSelect}
+            >
+              <option value="">Elegir…</option>
+              {choferes.map((ch) => (
+                <option key={ch.id} value={String(ch.id)}>
+                  {ch.nombre}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label style={transporteFieldWrap}>
+            <span style={transporteFieldLabel}>Estado</span>
+            <input
+              placeholder="Estado del servicio"
+              value={servForm.estado}
+              onChange={(e) =>
+                setServForm((f) => ({ ...f, estado: e.target.value }))
+              }
+              style={transporteInput}
+            />
+          </label>
+          <label style={transporteFieldWrap}>
+            <span style={transporteFieldLabel}>Placa</span>
+            <select
+              value={servForm.vehiculoId}
+              onChange={(e) =>
+                setServForm((f) => ({ ...f, vehiculoId: e.target.value }))
+              }
+              style={transporteSelect}
+            >
+              <option value="">Elegir…</option>
+              {vehiculos.map((v) => (
+                <option key={v.id} value={String(v.id)}>
+                  {v.placa}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label style={transporteFieldWrap}>
+            <span style={transporteFieldLabel}>Vehículo</span>
+            <input
+              readOnly
+              tabIndex={-1}
+              title="Modelo del vehículo según la placa"
+              value={vehiculoSeleccionado?.modelo ?? '—'}
+              style={transporteInputReadonly}
+            />
+          </label>
+        </div>
+        <div style={transporteDuracionRow}>
+          <span style={transporteDuracionLabel}>Duración del trayecto</span>
+          <input
+            type="number"
+            min={0}
+            max={24}
+            title="Horas"
+            aria-label="Horas de duración"
+            value={servForm.durHoras}
+            onChange={(e) =>
+              setServForm((f) => ({ ...f, durHoras: e.target.value }))
+            }
+            style={transporteDuracionInput}
+          />
+          <span style={transporteDuracionSufijo}>h</span>
+          <input
+            type="number"
+            min={0}
+            max={59}
+            step={1}
+            title="Minutos"
+            aria-label="Minutos de duración"
+            value={servForm.durMinutos}
+            onChange={(e) =>
+              setServForm((f) => ({ ...f, durMinutos: e.target.value }))
+            }
+            style={transporteDuracionInput}
+          />
+          <span style={transporteDuracionSufijo}>min</span>
+          <span style={transporteDuracionHint}>ej. 3 h 30 min</span>
+        </div>
+        <button
+          type="button"
+          style={{
+            ...reportBtnPrimary,
+            marginTop: 6,
+            height: 34,
+            fontSize: 13,
+            padding: '0 12px',
+            opacity: servicioSaving || vehiculosLoading ? 0.65 : 1,
+            cursor: servicioSaving || vehiculosLoading ? 'wait' : 'pointer'
+          }}
+          disabled={servicioSaving || vehiculosLoading}
+          onClick={saveServicio}
+        >
+          {servicioSaving ? 'Guardando…' : 'Agregar al calendario'}
+        </button>
       </div>
 
-      <div style={controls}>
-        <h3 style={dateTitle}>{currentRangeLabel}</h3>
+      <div style={transporteCalendarToolbar}>
+        <h3 style={transporteDateTitle}>{currentRangeLabel}</h3>
       </div>
 
-      <div style={calendarBox}>
+      <div className="transporte-calendar-host" style={calendarBox}>
         <FullCalendar
           ref={calendarRef}
           plugins={[timeGridPlugin, interactionPlugin]}
           locale={esLocale}
           firstDay={1}
           initialView="timeGridWeek"
+          height="parent"
           editable
           selectable
           nowIndicator
+          slotEventOverlap={false}
           events={calendarEvents.map((e) => ({
             ...e,
             backgroundColor: getColor(e.status),
@@ -1390,7 +1761,7 @@ function TransporteDashboard({
           eventClick={(info) => setSelectedEvent(info.event)}
         />
       </div>
-    </>
+    </div>
   )
 }
 
@@ -1402,7 +1773,12 @@ const font =
 const layout = {
   display: 'flex',
   fontFamily: font,
-  textAlign: 'left'
+  textAlign: 'left',
+  flex: 1,
+  minWidth: 0,
+  minHeight: 0,
+  width: '100%',
+  alignSelf: 'stretch'
 }
 
 const sidebar = {
@@ -1492,10 +1868,14 @@ const navIndicator = {
 }
 const main = {
   flex: 1,
-  padding: '36px 32px',
+  padding: '16px 20px 20px',
   background:
     'linear-gradient(165deg, #eef2f7 0%, #e8edf4 45%, #f1f5f9 100%)',
-  minWidth: 0
+  minWidth: 0,
+  minHeight: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  boxSizing: 'border-box'
 }
 
 const headerBlock = {
@@ -1563,18 +1943,234 @@ const cardText = {
   lineHeight: 1.35
 }
 
-const controls = {
+const cardCompact = {
+  ...card,
+  padding: '10px 12px',
+  borderRadius: 12
+}
+
+const cardNumberCompact = {
+  ...cardNumber,
+  fontSize: 22,
+  marginBottom: 2
+}
+
+const cardHint = {
+  margin: 0,
+  marginBottom: 4,
+  fontSize: 11,
+  fontWeight: 600,
+  color: '#64748b',
+  lineHeight: 1.25
+}
+
+const cardHintCompact = {
+  ...cardHint,
+  fontSize: 10,
+  marginBottom: 2
+}
+
+const cardTextCompact = {
+  ...cardText,
+  fontSize: 10,
+  letterSpacing: '0.06em'
+}
+
+const transporteRoot = {
+  flex: 1,
+  minHeight: 0,
+  minWidth: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  alignSelf: 'stretch'
+}
+
+const transporteHeader = {
+  margin: '0 0 10px',
+  textAlign: 'left',
+  maxWidth: 'none'
+}
+
+const transporteTitle = {
+  fontSize: 'clamp(1.15rem, 2vw, 1.45rem)',
+  fontWeight: 800,
+  lineHeight: 1.2,
+  letterSpacing: '-0.03em',
+  margin: 0,
+  marginBottom: 4,
+  color: '#0f172a'
+}
+
+const transporteSubtitle = {
+  margin: 0,
+  fontSize: 12,
+  fontWeight: 500,
+  color: '#64748b',
+  lineHeight: 1.4
+}
+
+const transporteCards = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+  gap: 10,
+  marginBottom: 12
+}
+
+const transporteFormPanel = {
+  background: 'rgba(255, 255, 255, 0.95)',
+  borderRadius: 12,
+  border: '1px solid rgba(148, 163, 184, 0.2)',
+  boxShadow:
+    '0 2px 4px -1px rgba(15, 23, 42, 0.05), 0 8px 20px -10px rgba(15, 23, 42, 0.1)',
+  padding: '10px 12px',
+  marginBottom: 10
+}
+
+const transporteFormTitle = {
+  fontWeight: 800,
+  fontSize: 12,
+  letterSpacing: '0.04em',
+  textTransform: 'uppercase',
+  color: '#475569',
+  marginBottom: 8
+}
+
+/** Fila 1: fecha y hora compactas; origen y destino flexibles */
+const transporteFormRow1 = {
+  display: 'grid',
+  gridTemplateColumns:
+    'minmax(0, 9.75rem) minmax(0, 8rem) minmax(0, 1fr) minmax(0, 1fr)',
+  gap: 8,
+  marginBottom: 8
+}
+
+/** Fila 2: chofer, estado, placa, vehículo (modelo) */
+const transporteFormRow2 = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+  gap: 8
+}
+
+const transporteInputDateTime = {
+  maxWidth: '100%',
+  width: '100%',
+  minWidth: 0,
+  boxSizing: 'border-box'
+}
+
+const transporteInputReadonly = {
+  height: 34,
+  borderRadius: 10,
+  padding: '0 10px',
+  border: '1px solid rgba(15, 23, 42, 0.08)',
+  background: 'rgba(241, 245, 249, 0.95)',
+  color: '#475569',
+  fontSize: 13,
+  fontWeight: 600,
+  outline: 'none',
+  boxSizing: 'border-box',
+  cursor: 'default'
+}
+
+const transporteFieldWrap = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  minWidth: 0
+}
+
+const transporteFieldLabel = {
+  fontSize: 11,
+  fontWeight: 800,
+  letterSpacing: '0.04em',
+  textTransform: 'uppercase',
+  color: '#64748b'
+}
+
+const transporteInput = {
+  height: 34,
+  borderRadius: 10,
+  padding: '0 10px',
+  border: '1px solid rgba(15, 23, 42, 0.12)',
+  background: 'white',
+  color: '#0f172a',
+  fontSize: 13,
+  fontWeight: 600,
+  outline: 'none',
+  boxSizing: 'border-box'
+}
+
+const transporteSelect = {
+  height: 34,
+  borderRadius: 10,
+  padding: '0 8px',
+  border: '1px solid rgba(15, 23, 42, 0.12)',
+  background: 'white',
+  color: '#0f172a',
+  fontSize: 13,
+  fontWeight: 600,
+  outline: 'none',
+  boxSizing: 'border-box'
+}
+
+const transporteDuracionRow = {
+  display: 'flex',
+  alignItems: 'center',
+  flexWrap: 'wrap',
+  gap: '6px 8px',
+  marginTop: 8
+}
+
+const transporteDuracionLabel = {
+  fontSize: 12,
+  fontWeight: 800,
+  color: '#475569',
+  marginRight: 4
+}
+
+const transporteDuracionInput = {
+  width: 52,
+  height: 34,
+  borderRadius: 10,
+  padding: '0 8px',
+  border: '1px solid rgba(15, 23, 42, 0.12)',
+  background: 'white',
+  color: '#0f172a',
+  fontSize: 14,
+  fontWeight: 700,
+  textAlign: 'center',
+  outline: 'none',
+  boxSizing: 'border-box'
+}
+
+const transporteDuracionSufijo = {
+  fontSize: 13,
+  fontWeight: 700,
+  color: '#64748b',
+  marginRight: 4
+}
+
+const transporteDuracionHint = {
+  fontSize: 11,
+  fontWeight: 600,
+  color: '#94a3b8',
+  marginLeft: 4
+}
+
+const transporteCalendarToolbar = {
   display: 'flex',
   justifyContent: 'flex-end',
   alignItems: 'center',
-  marginBottom: 15
+  marginBottom: 8,
+  flexShrink: 0
 }
 
-const dateTitle = {
-  fontWeight: 600,
-  fontSize: 15,
+const transporteDateTitle = {
+  fontWeight: 700,
+  fontSize: 16,
   letterSpacing: '0.02em',
-  color: '#334155'
+  color: '#1e293b',
+  margin: 0
 }
 
 const workshopPanel = {
@@ -2052,13 +2648,19 @@ const configItems = [
 ]
 
 const calendarBox = {
+  flex: 1,
+  minHeight: 420,
+  height: 'calc(100svh - 248px)',
+  display: 'flex',
+  flexDirection: 'column',
   background: 'rgba(255, 255, 255, 0.95)',
-  padding: 24,
-  borderRadius: 16,
+  padding: '12px 14px 14px',
+  borderRadius: 14,
   border: '1px solid rgba(148, 163, 184, 0.2)',
   boxShadow:
-    '0 4px 6px -1px rgba(15, 23, 42, 0.05), 0 20px 40px -14px rgba(15, 23, 42, 0.12)',
-  backdropFilter: 'blur(8px)'
+    '0 4px 6px -1px rgba(15, 23, 42, 0.05), 0 16px 36px -14px rgba(15, 23, 42, 0.12)',
+  backdropFilter: 'blur(8px)',
+  boxSizing: 'border-box'
 }
 
 const overlay = {

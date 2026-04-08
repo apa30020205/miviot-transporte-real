@@ -10,6 +10,14 @@ function parseDate(value) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/** Duración en minutos: 15 min a 24 h */
+function parseDuracionMinutos(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 15 || n > 24 * 60) return null;
+  return n;
+}
+
 exports.list = async (_req, res, next) => {
   try {
     const items = await prisma.servicio.findMany({
@@ -41,7 +49,7 @@ exports.getById = async (req, res, next) => {
 
 exports.create = async (req, res, next) => {
   try {
-    const { fecha, origen, destino, estado, vehiculoId, choferId } = req.body ?? {};
+    const { fecha, duracionMinutos, origen, destino, estado, vehiculoId, choferId } = req.body ?? {};
 
     if (!fecha || !origen || !destino || !estado || vehiculoId === undefined || choferId === undefined) {
       return res.status(400).json({ error: "Faltan campos requeridos" });
@@ -50,9 +58,19 @@ exports.create = async (req, res, next) => {
     const parsedFecha = parseDate(fecha);
     if (!parsedFecha) return res.status(400).json({ error: "fecha inválida (usa ISO-8601)" });
 
+    let dur = 120;
+    if (duracionMinutos !== undefined && duracionMinutos !== null && duracionMinutos !== "") {
+      const parsed = parseDuracionMinutos(duracionMinutos);
+      if (parsed === null) {
+        return res.status(400).json({ error: "duracionMinutos inválida (15–1440)" });
+      }
+      dur = parsed;
+    }
+
     const created = await prisma.servicio.create({
       data: {
         fecha: parsedFecha,
+        duracionMinutos: dur,
         origen: String(origen),
         destino: String(destino),
         estado: String(estado),
@@ -72,7 +90,7 @@ exports.updateById = async (req, res, next) => {
     const id = parseId(req.params.id);
     if (!id) return res.status(400).json({ error: "id inválido" });
 
-    const { fecha, origen, destino, estado, vehiculoId, choferId } = req.body ?? {};
+    const { fecha, duracionMinutos, origen, destino, estado, vehiculoId, choferId } = req.body ?? {};
 
     let fechaValue;
     if (fecha !== undefined) {
@@ -81,10 +99,20 @@ exports.updateById = async (req, res, next) => {
       fechaValue = parsed;
     }
 
+    let durValue;
+    if (duracionMinutos !== undefined) {
+      const parsed = parseDuracionMinutos(duracionMinutos);
+      if (parsed === null) {
+        return res.status(400).json({ error: "duracionMinutos inválida (15–1440)" });
+      }
+      durValue = parsed;
+    }
+
     const updated = await prisma.servicio.update({
       where: { id },
       data: {
         ...(fecha !== undefined ? { fecha: fechaValue } : {}),
+        ...(durValue !== undefined ? { duracionMinutos: durValue } : {}),
         ...(origen !== undefined ? { origen: String(origen) } : {}),
         ...(destino !== undefined ? { destino: String(destino) } : {}),
         ...(estado !== undefined ? { estado: String(estado) } : {}),

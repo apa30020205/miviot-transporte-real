@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE `Servicio` ADD COLUMN `duracionMinutos` INTEGER NOT NULL DEFAULT 120;
