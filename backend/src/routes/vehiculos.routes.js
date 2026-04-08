@@ -1,0 +1,13 @@
+const express = require("express");
+const controller = require("../controllers/vehiculos.controller");
+
+const router = express.Router();
+
+router.get("/", controller.list);
+router.get("/:id", controller.getById);
+router.post("/", controller.create);
+router.put("/:id", controller.updateById);
+router.delete("/:id", controller.deleteById);
+
+module.exports = router;
+
